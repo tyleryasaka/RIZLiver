@@ -1,0 +1,27 @@
+Package: RIZLiver
+Type: Package
+Title: RIZLiver
+Version: 0.0.0
+Author: Tyler Yasaka
+Maintainer: Tyler Yasaka <tyy4@pitt.edu>
+Description: Robust inference of liver zonation from gene expression
+License: Academic Free License v. 3.0
+Encoding: UTF-8
+LazyData: true
+Imports:
+    org.Hs.eg.db,
+    org.Mm.eg.db,
+    AnnotationDbi,
+    Matrix,
+    moments,
+    dplyr,
+    tidyr,
+    ggplot2,
+    ggdark,
+    ggridges,
+    akima,
+    orthogene,
+    irlba,
+    RANN,
+    RSpectra,
+    patchwork
