@@ -1,7 +1,7 @@
 Package: RIZLiver
 Type: Package
 Title: RIZLiver
-Version: 0.0.0
+Version: 0.1.0
 Author: Tyler Yasaka
 Maintainer: Tyler Yasaka <tyy4@pitt.edu>
 Description: Robust inference of liver zonation from gene expression

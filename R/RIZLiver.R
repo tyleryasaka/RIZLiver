@@ -98,7 +98,7 @@ trainModel = function(mtx, coords = NULL, species = 'human', eval = FALSE, verbo
   mtx = cleanMatrix(mtx)
   combined = .build_reference_for_fitting(refs)
 
-  zone_obj = fitZonation(mtx, combined$matrix, combined$positions,
+  zone_obj = fitZonation(mtx, combined$refs, combined$positions,
                          c(zone_1.landmark, zone_3.landmark), verbose = verbose)
   applyModel(mtx, zone_obj, coords = coords)
 }
@@ -132,7 +132,7 @@ applyModel = function(mtx, zone_obj, coords = NULL) {
 #'   Values are the mean expression fractions used in the model.
 #' @export
 getGeneZonation = function(zone_obj) {
-  m = zone_obj$fit$r0 / zone_obj$fit$beta
+  m = zone_obj$fit$alpha / zone_obj$fit$beta
   rownames(m) = zone_obj$fit$lm
   colnames(m) = paste0('layer_', seq_len(ncol(m)))
   as.data.frame(m)
