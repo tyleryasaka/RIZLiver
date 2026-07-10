@@ -570,34 +570,33 @@ plotZonationRidge <- function(zone_objs, palette = 'grDevices::rainbow', line_wi
 plotZonationHeat = function(zone_obj_x, zone_obj_y, n_per_zone = 30, font_size = 9) {
   if (!requireNamespace('patchwork', quietly = TRUE))
     stop("patchwork is required; install with install.packages('patchwork').")
-  if (!identical(zone_obj_x$fit$lm, zone_obj_y$fit$lm) ||
-      zone_obj_x$fit$r0 != zone_obj_y$fit$r0)
+  if (!identical(zone_obj_x$fit$lm, zone_obj_y$fit$lm) || zone_obj_x$fit$r0 != zone_obj_y$fit$r0)
     stop('zone_obj_x and zone_obj_y must share the same fit.')
-
   mtx_x = zone_obj_x$mtx
   mtx_y = zone_obj_y$mtx
   n_layers = zone_obj_x$fit$n_layers
   eps = 1e-6
-
   m_post = zone_obj_x$fit$alpha / zone_obj_x$fit$beta
+  rownames(m_post) = zone_obj_x$fit$lm
   row_tot = rowSums(m_post, na.rm = TRUE)
   row_tot[!is.finite(row_tot) | row_tot < 1e-12] = 1e-12
   p_layer = sweep(m_post, 1, row_tot, '/')
-
   common = intersect(rownames(p_layer), rownames(mtx_y))
   if (length(common) == 0) stop('no reference genes present in y.')
   p_layer = p_layer[common, , drop = FALSE]
-
   Nx = Matrix::colSums(mtx_x); Nx[Nx == 0] = 1
   Ny = Matrix::colSums(mtx_y); Ny[Ny == 0] = 1
   mu_x = rowMeans(sweep(as.matrix(mtx_x[common, , drop = FALSE]), 2, Nx, '/'))
   mu_y = rowMeans(sweep(as.matrix(mtx_y[common, , drop = FALSE]), 2, Ny, '/'))
   log_expr = log1p(mu_x * 1e4)
-
   midpoint = (n_layers + 1) / 2
   com = as.numeric(p_layer %*% seq_len(n_layers))
   names(com) = rownames(p_layer)
   zonation = (com - midpoint) * log_expr
+
+  mono = apply(p_layer, 1, function(v) suppressWarnings(cor(v, seq_len(n_layers), method = 'spearman')))
+  keep = names(zonation)[is.finite(mono[names(zonation)]) & abs(mono[names(zonation)]) >= 0.5]
+  zonation = zonation[names(zonation) %in% keep]
 
   n_z1 = n_z3 = n_per_zone
   z1_pool = names(sort(zonation[is.finite(zonation) & zonation < 0]))
@@ -606,45 +605,38 @@ plotZonationHeat = function(zone_obj_x, zone_obj_y, n_per_zone = 30, font_size =
   z3_top = head(z3_pool, n_z3)
   ordered_genes = c(z1_top, rev(z3_top))
   if (length(ordered_genes) == 0) stop('no genes after zone filtering.')
-
   log_fc_top = log((mu_y[ordered_genes] + eps) / (mu_x[ordered_genes] + eps))
-
   p_layer_top = p_layer[ordered_genes, , drop = FALSE]
-
   heat_df = data.frame(
     gene  = factor(rep(ordered_genes, times = n_layers), levels = rev(ordered_genes)),
-    layer = factor(rep(seq_len(n_layers), each = length(ordered_genes)),
-                   levels = seq_len(n_layers)),
+    layer = factor(rep(seq_len(n_layers), each = length(ordered_genes)), levels = seq_len(n_layers)),
     value = as.numeric(p_layer_top)
   )
-  bar_df = data.frame(
-    gene   = factor(ordered_genes, levels = rev(ordered_genes)),
-    log_fc = log_fc_top
-  )
-
+  bar_df = data.frame(gene = factor(ordered_genes, levels = rev(ordered_genes)), log_fc = log_fc_top)
   fill_max = max(heat_df$value, na.rm = TRUE); if (!is.finite(fill_max) || fill_max == 0) fill_max = 1
   bar_lim  = max(abs(bar_df$log_fc), na.rm = TRUE); if (!is.finite(bar_lim) || bar_lim == 0) bar_lim = 1
+  z_bound = length(z3_top) + 0.5
 
   p_heat = ggplot2::ggplot(heat_df, ggplot2::aes(x = layer, y = gene, fill = value)) +
     ggplot2::geom_tile() +
-    ggplot2::scale_fill_viridis_c(limits = c(0, fill_max), na.value = 'grey90',
-                                  name = 'Model\nPosterior') +
-    ggplot2::labs(x = 'Layer', y = 'Gene') +
+    ggplot2::scale_fill_viridis_c(limits = c(0, fill_max), na.value = 'grey90', name = 'Model\nPosterior') +
+    ggplot2::labs(x = 'Layer', y = NULL) +
     ggplot2::theme_classic() +
-    ggplot2::theme(axis.text = ggplot2::element_text(size = font_size))
+    ggplot2::theme(axis.title.y = ggplot2::element_blank(), axis.text = ggplot2::element_text(size = font_size))
 
   p_bar = ggplot2::ggplot(bar_df, ggplot2::aes(x = log_fc, y = gene, fill = log_fc > 0)) +
+    ggplot2::annotate('rect', xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = z_bound, fill = '#b40426', alpha = 0.12) +
+    ggplot2::annotate('rect', xmin = -Inf, xmax = Inf, ymin = z_bound, ymax = Inf, fill = '#3b4cc0', alpha = 0.12) +
     ggplot2::geom_col() +
-    ggplot2::scale_fill_manual(values = c('TRUE' = '#b40426', 'FALSE' = '#3b4cc0')) +
+    ggplot2::scale_fill_manual(values = c('TRUE' = '#D55E00', 'FALSE' = '#009E73')) +
+    ggplot2::guides(fill = 'none') +
     ggplot2::scale_x_continuous(limits = c(-bar_lim, bar_lim)) +
     ggplot2::geom_vline(xintercept = 0) +
-    ggplot2::labs(x = 'log FC\n(y vs x)') +
+    ggplot2::labs(x = 'log FC') +
     ggplot2::theme_classic() +
-    ggplot2::theme(axis.title.y = ggplot2::element_blank(),
-                   axis.text.y  = ggplot2::element_blank(),
-                   axis.ticks.y = ggplot2::element_blank(),
-                   legend.position = 'none',
+    ggplot2::theme(axis.title.y = ggplot2::element_blank(), axis.text.y = ggplot2::element_blank(),
+                   axis.ticks.y = ggplot2::element_blank(), legend.position = 'none',
                    axis.text = ggplot2::element_text(size = font_size))
 
-  patchwork::wrap_plots(p_heat, p_bar, widths = c(4, 1))
+  patchwork::wrap_plots(p_bar, p_heat, widths = c(1, 4))
 }
