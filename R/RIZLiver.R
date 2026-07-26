@@ -595,7 +595,7 @@ plotZonationHeat = function(zone_obj_x, zone_obj_y, n_per_zone = 30, font_size =
   zonation = (com - midpoint) * log_expr
 
   mono = apply(p_layer, 1, function(v) suppressWarnings(cor(v, seq_len(n_layers), method = 'spearman')))
-  keep = names(zonation)[is.finite(mono[names(zonation)]) & abs(mono[names(zonation)]) >= 0.5]
+  keep = names(zonation)[is.finite(mono[names(zonation)]) & abs(mono[names(zonation)]) >= 0]
   zonation = zonation[names(zonation) %in% keep]
 
   n_z1 = n_z3 = n_per_zone
