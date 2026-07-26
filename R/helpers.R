@@ -150,21 +150,22 @@
        logprior = log(prior + 1e-12), n_layers = n_layers, r0 = prior_fit$r0)
 }
 
-.expected_layer = function(counts, fit) {
+.expected_layer = function(counts, fit, return_posterior = FALSE) {
   g = intersect(fit$lm, rownames(counts))
+  ok = fit$ok
   if (length(g) < 2) {
     warning('fewer than 2 landmark genes present in counts')
-    return(setNames(rep(NA_real_, ncol(counts)), colnames(counts)))
+    na = setNames(rep(NA_real_, ncol(counts)), colnames(counts))
+    if (!return_posterior) return(na)
+    return(list(el = na, post = NULL, ok = ok))
   }
   alpha = fit$alpha[g, , drop = FALSE]
-  beta  = fit$beta[g, , drop = FALSE]
+  beta = fit$beta[g, , drop = FALSE]
   r0 = fit$r0
-  ok = fit$ok
   logprior = fit$logprior
   N = Matrix::colSums(counts); N[N == 0] = 1
   X = as.matrix(counts[g, , drop = FALSE])
-
-  el = vapply(seq_len(ncol(counts)), function(j) {
+  P = t(vapply(seq_len(ncol(counts)), function(j) {
     ll = vapply(ok, function(k) {
       a = alpha[, k]; b = beta[, k]
       size_eff = a * r0 / (a + r0)
@@ -172,9 +173,19 @@
       sum(dnbinom(X[, j], size = size_eff, prob = prob_eff, log = TRUE))
     }, numeric(1))
     ll = ll + logprior[ok]; ll = ll - max(ll)
-    post = exp(ll); sum(ok * post / sum(post))
-  }, numeric(1))
-  setNames(el, colnames(counts))
+    post = exp(ll); post / sum(post)
+  }, numeric(length(ok))))
+  rownames(P) = colnames(counts)
+  colnames(P) = paste0('layer_', ok)
+  el = setNames(as.numeric(P %*% ok), colnames(counts))
+  if (!return_posterior) return(el)
+  list(el = el, post = P, ok = ok)
+}
+
+.zonation_posterior = function(zone_obj) {
+  access_cache(zone_obj, 'zonation_posterior', function() {
+    .expected_layer(zone_obj$mtx, zone_obj$fit, return_posterior = TRUE)
+  })
 }
 
 .checkInputs = function(counts, refs_per_source, positions, landmark_genes) {

@@ -640,3 +640,31 @@ plotZonationHeat = function(zone_obj_x, zone_obj_y, n_per_zone = 30, font_size =
 
   patchwork::wrap_plots(p_bar, p_heat, widths = c(1, 4))
 }
+
+#' Per-cell zonation uncertainty (posterior SD on the zonation gradient)
+#'
+#' Returns, for each cell/spot, the standard deviation of the posterior layer
+#' distribution expressed in the same units as \code{getZonationGradient}
+#' (the [1, 3] gradient axis). It is an error bar on the inferred position:
+#' small when the posterior mass is concentrated, large when the cell's
+#' landmark counts are consistent with a wide range of positions.
+#'
+#' @param zone_obj A calibrated Zonation Object (output of \code{applyModel} /
+#'   \code{trainModel}).
+#' @return A named numeric vector of posterior standard deviations, one per
+#'   cell/spot, on the [1, 3] gradient scale. Cells that cannot be scored
+#'   (fewer than 2 landmark genes present) are \code{NA}.
+#' @export
+getZonationUncertainty = function(zone_obj) {
+  ps = .zonation_posterior(zone_obj)
+  P = ps$post
+  ok = ps$ok
+  if (is.null(P)) {
+    return(setNames(rep(NA_real_, ncol(zone_obj$mtx)), colnames(zone_obj$mtx)))
+  }
+  g_layer = zone_obj$cal(ok) * 2 + 1
+  mu   = as.numeric(P %*% g_layer)
+  ex2  = as.numeric(P %*% (g_layer^2))
+  varg = pmax(ex2 - mu^2, 0)
+  setNames(sqrt(varg), rownames(P))
+}
