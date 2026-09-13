@@ -668,3 +668,134 @@ getZonationUncertainty = function(zone_obj) {
   varg = pmax(ex2 - mu^2, 0)
   setNames(sqrt(varg), rownames(P))
 }
+
+#' @param zone_obj Calibrated Zonation Object
+#' @return A named numeric vector of zonal identity scores, one per cell/spot.
+#' @export
+getZonalIdentity = function(zone_obj) {
+  access_cache(zone_obj, 'zonal_identity', function() {
+    .identity_scores(zone_obj)
+  })
+}
+
+#' @param zone_obj_x Baseline zonation object (output of \code{trainModel})
+#' @param zone_obj_y Comparison zonation object, or a named list of
+#'   them. Must share the same fit as \code{zone_obj_x}.
+#' @return A data frame with one row per sample per zone. \code{auc} is the
+#'   probability that a cell from the sample has a stronger zonal identity than
+#'   a baseline cell in the same zone: 0.5 means no difference, above 0.5
+#'   stronger, below 0.5 weaker.
+#' @export
+compareZonalIdentity = function(zone_obj_x, zone_obj_y) {
+  df = .identity_table(zone_obj_x, zone_obj_y)
+  df = df[is.finite(df$p), , drop = FALSE]
+  if (!nrow(df)) stop('no cells with calibrated identity percentiles.')
+
+  per_zone = do.call(rbind, lapply(levels(df$sample), function(nm) {
+    do.call(rbind, lapply(ZONES, function(z) {
+      sel = df$sample == nm & df$zone == z
+      p = df$p[sel]
+      if (!length(p)) return(NULL)
+      obs = .ecdf_mad(p)
+      nul = .identity_null(df$score[df$zone == z & df$sample == 'Baseline'], length(p))
+      mp = if (is.null(nul)) NA_real_
+           else (1 + sum(nul$mad >= obs)) / (nul$n_rep + 1)
+      data.frame(sample = nm, zone = z, n_cells = length(p),
+                 auc = mean(p), mad = obs, mad_p = mp,
+                 stringsAsFactors = FALSE)
+    }))
+  }))
+
+  overall = do.call(rbind, lapply(levels(df$sample), function(nm) {
+    r = per_zone[per_zone$sample == nm, , drop = FALSE]
+    if (!nrow(r)) return(NULL)
+    data.frame(sample = nm, zone = 'All', n_cells = sum(r$n_cells),
+               auc = mean(r$auc), mad = mean(r$mad), mad_p = NA_real_,
+               stringsAsFactors = FALSE)
+  }))
+
+  out = rbind(per_zone, overall)
+  out$sample = factor(out$sample, levels = levels(df$sample))
+  out$zone = factor(out$zone, levels = c(ZONES, 'All'))
+  out = out[order(out$sample, out$zone), ]
+  rownames(out) = NULL
+  out
+}
+
+#' @param zone_obj_x Baseline zonation object (output of \code{trainModel})
+#' @param zone_obj_y Comparison zonation object, or a (preferably named) list of
+#'   them. Must share the same fit as \code{zone_obj_x}.
+#' @param line_width Numeric line width for the distribution curves (default 1)
+#' @return A ggplot object. The grey diagonal is the baseline. Curves above it
+#'   have more cells with a strong zonal identity than baseline, curves below it
+#'   fewer, and the mean vertical deviation is the AUC printed in each panel.
+#' @export
+plotZonalIdentity = function(zone_obj_x, zone_obj_y, line_width = 1) {
+  df = .identity_table(zone_obj_x, zone_obj_y)
+  df = df[is.finite(df$p), , drop = FALSE]
+  if (!nrow(df)) stop('no cells with calibrated identity percentiles.')
+  df$zone = droplevels(df$zone)
+  zones = levels(df$zone)
+  samples = levels(df$sample)
+
+  pal = rep_len(ZONE_COLORS, length(samples))
+  names(pal) = samples
+
+  auc_df = do.call(rbind, lapply(zones, function(z) {
+    do.call(rbind, lapply(seq_along(samples), function(i) {
+      p = df$p[df$sample == samples[i] & df$zone == z]
+      if (!length(p)) return(NULL)
+      data.frame(zone = z, sample = samples[i],
+                 label = sprintf('%.2f', mean(p)),
+                 y = 0.97 - 0.065 * i, stringsAsFactors = FALSE)
+    }))
+  }))
+  auc_df$zone = factor(auc_df$zone, levels = zones)
+  auc_df$sample = factor(auc_df$sample, levels = samples)
+  head_df = data.frame(zone = factor(zones, levels = zones),
+                       label = 'AUC', y = 0.97)
+
+  p = ggplot2::ggplot(df, ggplot2::aes(x = p, color = sample))
+
+  band_df = do.call(rbind, lapply(zones, function(z) {
+    inz = df$zone == z
+    n_comp = table(droplevels(df$sample[inz & df$sample != 'Baseline']))
+    if (!length(n_comp)) return(NULL)
+    b = .identity_band(df$score[inz & df$sample == 'Baseline'], min(n_comp))
+    if (is.null(b)) return(NULL)
+    cbind(zone = z, b)
+  }))
+  if (!is.null(band_df)) {
+    band_df$zone = factor(band_df$zone, levels = zones)
+    p = p + ggplot2::geom_ribbon(data = band_df,
+                                  ggplot2::aes(x = u, ymin = 1 - hi, ymax = 1 - lo),
+                                  inherit.aes = FALSE, fill = 'grey80', alpha = 0.55)
+  }
+
+  p +
+    ggplot2::geom_abline(slope = -1, intercept = 1, linetype = 2,
+                         color = 'grey55', linewidth = 0.4) +
+    ggplot2::stat_ecdf(ggplot2::aes(y = ggplot2::after_stat(1 - ecdf)),
+                       geom = 'step', pad = FALSE, linewidth = line_width) +
+    ggplot2::geom_text(data = head_df,
+                       ggplot2::aes(x = 0.8, y = y, label = label),
+                       inherit.aes = FALSE, hjust = 0, vjust = 1,
+                       size = 3, color = 'grey40') +
+    ggplot2::geom_text(data = auc_df,
+                       ggplot2::aes(x = 0.8, y = y, label = label, color = sample),
+                       inherit.aes = FALSE, hjust = 0, vjust = 1,
+                       size = 3, show.legend = FALSE) +
+    ggplot2::facet_wrap(~ zone, nrow = 1,
+                        labeller = ggplot2::as_labeller(function(x) gsub('_', ' ', x))) +
+    ggplot2::coord_fixed(ratio = 1, xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
+    ggplot2::scale_x_continuous(breaks = seq(0, 1, 0.25),
+                                labels = c('0', '0.25', '0.50', '0.75', '1')) +
+    ggplot2::scale_y_continuous(breaks = seq(0, 1, 0.25),
+                                labels = c('0', '0.25', '0.50', '0.75', '1')) +
+    ggplot2::scale_color_manual(values = pal, name = 'Sample') +
+    ggplot2::labs(x = 'Zonal identity score',
+                  y = 'Cumulative proportion') +
+    ggplot2::theme_classic() +
+    ggplot2::theme(panel.spacing = ggplot2::unit(1, 'lines'),
+                   strip.background = ggplot2::element_blank())
+}

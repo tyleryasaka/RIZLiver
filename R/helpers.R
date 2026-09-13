@@ -150,36 +150,42 @@
        logprior = log(prior + 1e-12), n_layers = n_layers, r0 = prior_fit$r0)
 }
 
-.expected_layer = function(counts, fit, return_posterior = FALSE) {
+.expected_layer = function(counts, fit, return_posterior = FALSE,
+                           return_lml = FALSE, N = NULL) {
   g = intersect(fit$lm, rownames(counts))
   ok = fit$ok
   if (length(g) < 2) {
     warning('fewer than 2 landmark genes present in counts')
     na = setNames(rep(NA_real_, ncol(counts)), colnames(counts))
-    if (!return_posterior) return(na)
-    return(list(el = na, post = NULL, ok = ok))
+    if (!return_posterior && !return_lml) return(na)
+    return(list(el = na, post = NULL, ok = ok, lml = na, n_genes = 0L))
   }
   alpha = fit$alpha[g, , drop = FALSE]
   beta = fit$beta[g, , drop = FALSE]
   r0 = fit$r0
   logprior = fit$logprior
-  N = Matrix::colSums(counts); N[N == 0] = 1
+  if (is.null(N)) { N = Matrix::colSums(counts); N[N == 0] = 1 }
   X = as.matrix(counts[g, , drop = FALSE])
-  P = t(vapply(seq_len(ncol(counts)), function(j) {
+  R = vapply(seq_len(ncol(counts)), function(j) {
     ll = vapply(ok, function(k) {
       a = alpha[, k]; b = beta[, k]
       size_eff = a * r0 / (a + r0)
       prob_eff = b * r0 / (b * r0 + N[j] * (a + r0))
       sum(dnbinom(X[, j], size = size_eff, prob = prob_eff, log = TRUE))
     }, numeric(1))
-    ll = ll + logprior[ok]; ll = ll - max(ll)
-    post = exp(ll); post / sum(post)
-  }, numeric(length(ok))))
+    ll = ll + logprior[ok]
+    mx = max(ll)
+    w = exp(ll - mx)
+    c(mx + log(sum(w)), w / sum(w))
+  }, numeric(length(ok) + 1L))
+  lml = setNames(R[1, ], colnames(counts))
+  P = t(R[-1, , drop = FALSE])
   rownames(P) = colnames(counts)
   colnames(P) = paste0('layer_', ok)
   el = setNames(as.numeric(P %*% ok), colnames(counts))
-  if (!return_posterior) return(el)
-  list(el = el, post = P, ok = ok)
+  if (!return_posterior && !return_lml) return(el)
+  list(el = el, post = if (return_posterior) P else NULL,
+       ok = ok, lml = lml, n_genes = length(g))
 }
 
 .zonation_posterior = function(zone_obj) {
@@ -206,6 +212,135 @@
   if (length(lm) < 4)
     warning(sprintf('only %d landmark genes usable; estimate may be weak.', length(lm)))
   invisible(NULL)
+}
+
+.downsample_landmarks = function(mtx, genes, target_depth) {
+  N = Matrix::colSums(mtx); N[N == 0] = 1
+  X = as.matrix(mtx[genes, , drop = FALSE])
+  p = pmin(target_depth / N, 1)
+  X[] = stats::rbinom(length(X), size = round(as.numeric(X)),
+                      prob = rep(p, each = length(genes)))
+  X
+}
+
+.identity_scores = function(zone_obj, target_depth = NULL) {
+  fit = zone_obj$fit
+  mtx = zone_obj$mtx
+  cells = colnames(mtx)
+  g = intersect(fit$lm, rownames(mtx))
+  if (length(g) < 2) {
+    warning('fewer than 2 landmark genes present in counts')
+    return(setNames(rep(NA_real_, ncol(mtx)), cells))
+  }
+  ok = fit$ok
+
+  X = if (is.null(target_depth)) as.matrix(mtx[g, , drop = FALSE])
+      else .downsample_landmarks(mtx, g, target_depth)
+
+  lam = fit$alpha[g, ok, drop = FALSE] / fit$beta[g, ok, drop = FALSE]
+  tot = colSums(lam, na.rm = TRUE)
+  tot[!is.finite(tot) | tot <= 0] = 1
+  logpi = log(pmax(sweep(lam, 2, tot, '/'), 1e-12))
+
+  LL = t(logpi) %*% X
+  LL = LL + fit$logprior[ok]
+  mx = apply(LL, 2, max)
+  lml = mx + log(colSums(exp(sweep(LL, 2, mx, '-'))))
+
+  S = colSums(X)
+  out = lml / S
+  out[S == 0] = NA_real_
+  setNames(as.numeric(out), cells)
+}
+
+.identity_pvalue = function(score, score_baseline) {
+  sb = sort(score_baseline[is.finite(score_baseline)])
+  if (!length(sb)) return(rep(NA_real_, length(score)))
+  p = (1 + findInterval(score, sb)) / (length(sb) + 1)
+  p[!is.finite(score)] = NA_real_
+  p
+}
+
+.identity_table = function(zone_obj_x, zone_obj_y, seed = NULL, target_depth = NULL) {
+  if (is.list(zone_obj_y) && !is.null(zone_obj_y$mtx)) zone_obj_y = list(zone_obj_y)
+  if (is.null(names(zone_obj_y))) {
+    names(zone_obj_y) = paste0('Sample_', seq_along(zone_obj_y))
+  } else {
+    blank = !nzchar(names(zone_obj_y))
+    names(zone_obj_y)[blank] = paste0('Sample_', which(blank))
+  }
+  if ('Baseline' %in% names(zone_obj_y))
+    stop("'Baseline' is reserved for zone_obj_x; rename the comparison sample.")
+  for (nm in names(zone_obj_y)) {
+    if (!identical(zone_obj_x$fit$lm, zone_obj_y[[nm]]$fit$lm))
+      stop(sprintf("sample '%s' does not share the same fit as zone_obj_x.", nm))
+  }
+
+  objs = c(list(Baseline = zone_obj_x), zone_obj_y)
+  if (is.null(target_depth)) {
+    target_depth = min(vapply(objs, function(z)
+      stats::median(Matrix::colSums(z$mtx)), numeric(1)))
+  }
+  if (!is.null(seed)) set.seed(seed)
+
+  df = do.call(rbind, lapply(names(objs), function(nm) {
+    s = .identity_scores(objs[[nm]], target_depth = target_depth)
+    data.frame(cell   = names(s),
+               sample = nm,
+               zone   = as.character(getZone(objs[[nm]])[names(s)]),
+               score  = as.numeric(s),
+               stringsAsFactors = FALSE)
+  }))
+  df$sample = factor(df$sample, levels = names(objs))
+  df$zone = factor(df$zone, levels = ZONES)
+
+  df$p = NA_real_
+  for (z in ZONES) {
+    iz = which(df$zone == z)
+    if (!length(iz)) next
+    ib = iz[df$sample[iz] == 'Baseline']
+    if (!length(ib)) {
+      warning(sprintf('no baseline cells in %s; p-values not calibrated there', z))
+      next
+    }
+    if (length(ib) < 20)
+      warning(sprintf('only %d baseline cells in %s; p-values are coarse there',
+                      length(ib), z))
+    df$p[iz] = .identity_pvalue(df$score[iz], df$score[ib])
+  }
+  rownames(df) = NULL
+  attr(df, 'target_depth') = target_depth
+  df
+}
+
+.identity_grid = seq(0, 1, length.out = 201)
+
+.ecdf_mad = function(p, u = .identity_grid) {
+  p = p[is.finite(p)]
+  if (!length(p)) return(NA_real_)
+  mean(abs(findInterval(u, sort(p)) / length(p) - u))
+}
+
+.identity_null = function(score_baseline, n, n_rep = 200, u = .identity_grid) {
+  sb = score_baseline[is.finite(score_baseline)]
+  nb = length(sb)
+  n = min(n, floor(nb / 2))
+  if (nb < 40 || n < 10) return(NULL)
+  d = vapply(seq_len(n_rep), function(i) {
+    idx = sample.int(nb, n)
+    ref = sort(sb[-idx])
+    p = (1 + findInterval(sb[idx], ref)) / (length(ref) + 1)
+    dev = findInterval(u, sort(p)) / n - u
+    c(max(abs(dev)), mean(abs(dev)))
+  }, numeric(2))
+  list(max_dev = d[1, ], mad = d[2, ], n = n, n_rep = n_rep)
+}
+
+.identity_band = function(score_baseline, n, level = 0.95, u = .identity_grid) {
+  nul = .identity_null(score_baseline, n, u = u)
+  if (is.null(nul)) return(NULL)
+  w = stats::quantile(nul$max_dev, level, names = FALSE)
+  data.frame(u = u, lo = pmax(u - w, 0), hi = pmin(u + w, 1))
 }
 
 fitZonation = function(counts, refs_per_source, positions, landmark_genes,
