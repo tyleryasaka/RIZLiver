@@ -726,11 +726,12 @@ compareZonalIdentity = function(zone_obj_x, zone_obj_y) {
 #' @param zone_obj_y Comparison zonation object, or a (preferably named) list of
 #'   them. Must share the same fit as \code{zone_obj_x}.
 #' @param line_width Numeric line width for the distribution curves (default 1)
+#' @param colors A vector of colors corresponding to the provided samples (including baseline).
 #' @return A ggplot object. The grey diagonal is the baseline. Curves above it
 #'   have more cells with a strong zonal identity than baseline, curves below it
 #'   fewer, and the mean vertical deviation is the AUC printed in each panel.
 #' @export
-plotZonalIdentity = function(zone_obj_x, zone_obj_y, line_width = 1) {
+plotZonalIdentity = function(zone_obj_x, zone_obj_y, line_width = 1, colors = NULL) {
   df = .identity_table(zone_obj_x, zone_obj_y)
   df = df[is.finite(df$p), , drop = FALSE]
   if (!nrow(df)) stop('no cells with calibrated identity percentiles.')
@@ -740,6 +741,32 @@ plotZonalIdentity = function(zone_obj_x, zone_obj_y, line_width = 1) {
 
   pal = rep_len(ZONE_COLORS, length(samples))
   names(pal) = samples
+  if (!is.null(colors)) {
+    if (!is.character(colors) || !length(colors))
+      stop('`colors` must be a non-empty character vector of colors.')
+    nm = names(colors)
+    if (is.null(nm) || !any(nzchar(nm))) {
+      pal[] = rep_len(colors, length(samples))
+    } else {
+      if (any(!nzchar(nm)))
+        stop('`colors` must be either fully named or entirely unnamed.')
+      unknown = setdiff(nm, samples)
+      if (length(unknown))
+        stop('`colors` names not found among samples: ',
+             paste(unknown, collapse = ', '), '. Samples are: ',
+             paste(samples, collapse = ', '), '.')
+      pal[nm] = colors[nm]
+    }
+    .is_color = function(x) {
+      vapply(x, function(z) {
+        if (is.na(z)) return(FALSE)
+        tryCatch({ grDevices::col2rgb(z); TRUE }, error = function(e) FALSE)
+      }, logical(1), USE.NAMES = FALSE)
+    }
+    bad = pal[!.is_color(pal)]
+    if (length(bad))
+      stop('invalid color(s): ', paste(unique(bad), collapse = ', '), '.')
+  }
 
   auc_df = do.call(rbind, lapply(zones, function(z) {
     do.call(rbind, lapply(seq_along(samples), function(i) {
